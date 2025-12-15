@@ -4,6 +4,7 @@ import sqlite3
 import datetime
 import threading
 import time
+import math
 from collections import deque
 from flask import Flask, render_template, Response, jsonify
 from ultralytics import YOLO
@@ -23,6 +24,11 @@ RATIO_MIN = 0.70
 RATIO_MAX = 1.40
 
 EXPOSURE_VAL = 0
+
+# Space Environment Constants
+EARTH_RADIUS_KM = 6371.0
+ORBITAL_ALTITUDE_KM = 408.0  # ISS altitude
+GRAVITATIONAL_CONSTANT = 398600.4418  # Earth's GM in km^3/s^2
 
 
 def init_db():
@@ -74,7 +80,113 @@ system_state = {
     "delta_v": "0.000",
     "detected_objects": [],
     "last_log": "",
+    "environment": {
+        "orbital_velocity": "7.66 km/s",
+        "altitude": f"{ORBITAL_ALTITUDE_KM} km",
+        "orbital_period": "92.68 min",
+        "temperature": "-100°C to +100°C",
+        "radiation_level": "Low"
+    }
 }
+
+
+class SpaceEnvironment:
+    """Simulates orbital mechanics and space environment parameters"""
+    
+    def __init__(self, altitude_km=ORBITAL_ALTITUDE_KM):
+        self.altitude_km = altitude_km
+        self.orbital_radius = EARTH_RADIUS_KM + altitude_km
+        self.update_orbital_parameters()
+        
+    def update_orbital_parameters(self):
+        """Calculate orbital velocity and period based on altitude"""
+        try:
+            # Orbital velocity: v = sqrt(GM/r)
+            self.orbital_velocity = math.sqrt(GRAVITATIONAL_CONSTANT / self.orbital_radius)
+            
+            # Orbital period: T = 2π * sqrt(r^3/GM)
+            self.orbital_period_seconds = 2 * math.pi * math.sqrt(
+                (self.orbital_radius ** 3) / GRAVITATIONAL_CONSTANT
+            )
+            self.orbital_period_minutes = self.orbital_period_seconds / 60
+        except Exception as e:
+            print(f"Error calculating orbital parameters: {e}")
+            self.orbital_velocity = 7.66
+            self.orbital_period_minutes = 92.68
+    
+    def get_environment_data(self):
+        """Returns current space environment parameters"""
+        try:
+            return {
+                "orbital_velocity": f"{self.orbital_velocity:.2f} km/s",
+                "altitude": f"{self.altitude_km:.1f} km",
+                "orbital_period": f"{self.orbital_period_minutes:.2f} min",
+                "temperature": "-100°C to +100°C",
+                "radiation_level": "Low"
+            }
+        except Exception as e:
+            print(f"Error getting environment data: {e}")
+            return system_state["environment"]
+
+
+class ObjectClassifier:
+    """Classifies detected objects based on their characteristics"""
+    
+    DEBRIS_TYPES = {
+        "small_debris": {"size_range": (0, 30), "risk_multiplier": 1.0, "label": "Small Debris"},
+        "medium_debris": {"size_range": (30, 60), "risk_multiplier": 1.5, "label": "Medium Debris"},
+        "large_debris": {"size_range": (60, 100), "risk_multiplier": 2.0, "label": "Large Debris"},
+        "critical_mass": {"size_range": (100, 1000), "risk_multiplier": 3.0, "label": "Critical Mass"}
+    }
+    
+    @staticmethod
+    def classify_object(radius, velocity_magnitude, is_approaching):
+        """Classifies object based on size, velocity, and approach vector"""
+        try:
+            # Determine size class
+            debris_type = "small_debris"
+            for dtype, params in ObjectClassifier.DEBRIS_TYPES.items():
+                min_size, max_size = params["size_range"]
+                if min_size <= radius < max_size:
+                    debris_type = dtype
+                    break
+            
+            # Get classification details
+            classification = ObjectClassifier.DEBRIS_TYPES[debris_type]
+            
+            # Calculate enhanced risk level
+            base_risk = classification["risk_multiplier"]
+            velocity_factor = min(velocity_magnitude / 10.0, 2.0)
+            approach_factor = 1.5 if is_approaching else 1.0
+            
+            risk_score = base_risk * velocity_factor * approach_factor
+            
+            # Determine risk level
+            if risk_score >= 3.0:
+                risk_level = "CRITICAL"
+            elif risk_score >= 2.0:
+                risk_level = "HIGH"
+            elif risk_score >= 1.0:
+                risk_level = "MEDIUM"
+            else:
+                risk_level = "LOW"
+            
+            return {
+                "type": classification["label"],
+                "risk_level": risk_level,
+                "risk_score": risk_score
+            }
+        except Exception as e:
+            print(f"Error classifying object: {e}")
+            return {
+                "type": "Unknown Debris",
+                "risk_level": "MEDIUM",
+                "risk_score": 1.0
+            }
+
+
+# Initialize space environment simulation
+space_env = SpaceEnvironment()
 
 
 class VideoCamera(object):
@@ -199,7 +311,14 @@ class VideoCamera(object):
             is_intercept = dist_future < COLLISION_ZONE
             is_approaching = growth_rate > GROWTH_THRESHOLD
 
-            risk_level = "LOW"
+            # Calculate velocity magnitude for classification
+            velocity_magnitude = math.sqrt(dx**2 + dy**2)
+            
+            # Classify the object
+            classification = ObjectClassifier.classify_object(radius, velocity_magnitude, is_approaching)
+            
+            risk_level = classification["risk_level"]
+            object_type = classification["type"]
 
             if is_intercept and is_approaching:
                 status_color = (0, 0, 255)
@@ -244,11 +363,25 @@ class VideoCamera(object):
                     frame, (int(x), int(y)), (pred_x, pred_y), (0, 255, 255), 3
                 )
 
+            # Add object type label on video feed
+            cv2.putText(
+                frame,
+                object_type,
+                (int(x) - 40, int(y) - int(radius) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                status_color,
+                2,
+            )
+
+            # Estimate distance based on size (inverse relationship)
+            estimated_distance = max(10, 500 - (radius * 2))
+            
             current_objects_data.append(
                 {
                     "id": "OBJ_001",
-                    "type": "debris",
-                    "distance": f"{500 - (radius*2):.2f}m",
+                    "type": object_type,
+                    "distance": f"{estimated_distance:.2f}m",
                     "risk": risk_level,
                 }
             )
@@ -352,6 +485,12 @@ def telemetry():
             formatted_logs.append(f"[{log[1].split()[1]}] {log[2]}: {log[3]}")
     except:
         formatted_logs = ["System Log Unavailable"]
+
+    # Update environment data
+    try:
+        system_state["environment"] = space_env.get_environment_data()
+    except Exception as e:
+        print(f"Error updating environment: {e}")
 
     return jsonify({"metrics": system_state, "logs": formatted_logs})
 
