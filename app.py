@@ -30,6 +30,10 @@ EARTH_RADIUS_KM = 6371.0
 ORBITAL_ALTITUDE_KM = 408.0  # ISS altitude
 GRAVITATIONAL_CONSTANT = 398600.4418  # Earth's GM in km^3/s^2
 
+# Distance Estimation Constants
+MIN_DISTANCE = 10  # Minimum estimated distance in meters
+MAX_BASE_DISTANCE = 500  # Maximum base distance for estimation in meters
+
 
 def init_db():
     conn = sqlite3.connect("orion_logs.db")
@@ -147,9 +151,13 @@ class ObjectClassifier:
             debris_type = "small_debris"
             for dtype, params in ObjectClassifier.DEBRIS_TYPES.items():
                 min_size, max_size = params["size_range"]
-                if min_size <= radius < max_size:
+                if min_size <= radius <= max_size:
                     debris_type = dtype
                     break
+            
+            # Handle objects larger than defined ranges
+            if radius > 1000:
+                debris_type = "critical_mass"
             
             # Get classification details
             classification = ObjectClassifier.DEBRIS_TYPES[debris_type]
@@ -376,7 +384,7 @@ class VideoCamera(object):
                 )
 
                 # Estimate distance based on size (inverse relationship)
-                estimated_distance = max(10, 500 - (radius * 2))
+                estimated_distance = max(MIN_DISTANCE, MAX_BASE_DISTANCE - (radius * 2))
                 
                 current_objects_data.append(
                     {

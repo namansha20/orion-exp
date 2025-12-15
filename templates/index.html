@@ -274,6 +274,14 @@
     </div>
 
     <script>
+      // Risk level color mapping
+      const RISK_COLORS = {
+        'CRITICAL': 'bg-red-600',
+        'HIGH': 'bg-orange-600',
+        'MEDIUM': 'bg-yellow-600',
+        'LOW': 'bg-green-600'
+      };
+
       function updateDashboard() {
         fetch("/api/telemetry")
           .then((response) => response.json())
@@ -286,7 +294,7 @@
             document.getElementById("sys-status").innerText = m.system_status;
 
             const statusEl = document.getElementById("sys-status");
-            if (m.system_status === "OK" || m.system_status === "SCANNING" || m.system_status.includes("SCANNING")) {
+            if (m.system_status === "OK" || m.system_status.includes("SCANNING")) {
               statusEl.className = "text-xl font-bold status-ok";
               document.getElementById("action-header").innerText =
                 "MAINTAIN_COURSE";
@@ -320,11 +328,7 @@
             const tbody = document.getElementById("obj-table-body");
             tbody.innerHTML = "";
             m.detected_objects.forEach((obj) => {
-              const riskColor = 
-                obj.risk === "CRITICAL" ? "bg-red-600" :
-                obj.risk === "HIGH" ? "bg-orange-600" :
-                obj.risk === "MEDIUM" ? "bg-yellow-600" :
-                "bg-green-600";
+              const riskColor = RISK_COLORS[obj.risk] || RISK_COLORS['LOW'];
               
               const row = `
                             <tr class="border-b border-slate-800">
