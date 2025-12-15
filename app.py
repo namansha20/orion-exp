@@ -242,212 +242,221 @@ class VideoCamera(object):
         return f"{h_dir} {v_dir}".strip()
 
     def get_frame(self):
-        success, frame = self.video.read()
-        if not success:
-            return None
+        try:
+            success, frame = self.video.read()
+            if not success:
+                return None
 
-        frame = cv2.flip(frame, 1)
-        h, w, _ = frame.shape
-        center_x, center_y = w // 2, h // 2
+            frame = cv2.flip(frame, 1)
+            h, w, _ = frame.shape
+            center_x, center_y = w // 2, h // 2
 
-        if model:
-            results = model(frame, stream=True, verbose=False, conf=0.40)
-        else:
-            results = []
+            if model:
+                results = model(frame, stream=True, verbose=False, conf=0.40)
+            else:
+                results = []
 
-        current_objects_data = []
-        critical_count = 0
-        status_msg = "SCANNING SECTOR..."
-        status_color = (0, 255, 0)
-        vector_text = "NO TARGET"
+            current_objects_data = []
+            critical_count = 0
+            status_msg = "SCANNING SECTOR..."
+            status_color = (0, 255, 0)
+            vector_text = "NO TARGET"
 
-        target_found = False
-        x, y, radius = 0, 0, 0
+            target_found = False
+            x, y, radius = 0, 0, 0
 
-        if model:
-            for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    confidence = float(box.conf[0])
-                    if confidence < CONFIDENCE_MIN:
-                        continue
+            if model:
+                for r in results:
+                    boxes = r.boxes
+                    for box in boxes:
+                        confidence = float(box.conf[0])
+                        if confidence < CONFIDENCE_MIN:
+                            continue
 
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    obj_w = x2 - x1
-                    obj_h = y2 - y1
-                    aspect_ratio = obj_w / float(obj_h)
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        obj_w = x2 - x1
+                        obj_h = y2 - y1
+                        aspect_ratio = obj_w / float(obj_h)
 
-                    if aspect_ratio < RATIO_MIN or aspect_ratio > RATIO_MAX:
-                        continue
+                        if aspect_ratio < RATIO_MIN or aspect_ratio > RATIO_MAX:
+                            continue
 
-                    target_found = True
-                    x = x1 + (obj_w // 2)
-                    y = y1 + (obj_h // 2)
-                    radius = max(obj_w, obj_h) // 2
+                        target_found = True
+                        x = x1 + (obj_w // 2)
+                        y = y1 + (obj_h // 2)
+                        radius = max(obj_w, obj_h) // 2
 
-                    self.pos_pts.appendleft((x, y))
-                    self.rad_pts.appendleft(radius)
-                    break
-                if target_found:
-                    break
+                        self.pos_pts.appendleft((x, y))
+                        self.rad_pts.appendleft(radius)
+                        break
+                    if target_found:
+                        break
 
-        if not target_found:
-            self.pos_pts.appendleft(None)
-            self.rad_pts.appendleft(None)
-            system_state["maneuver"] = "NONE"
-            system_state["delta_v"] = "0.000"
+            if not target_found:
+                self.pos_pts.appendleft(None)
+                self.rad_pts.appendleft(None)
+                system_state["maneuver"] = "NONE"
+                system_state["delta_v"] = "0.000"
 
-        if target_found:
-            (dx, dy), growth_rate = self.calculate_dynamics(self.pos_pts, self.rad_pts)
-            direction_label = self.get_direction_label(dx, dy)
-            z_label = "APPROACHING" if growth_rate > GROWTH_THRESHOLD else "STABLE"
+            if target_found:
+                (dx, dy), growth_rate = self.calculate_dynamics(self.pos_pts, self.rad_pts)
+                direction_label = self.get_direction_label(dx, dy)
+                z_label = "APPROACHING" if growth_rate > GROWTH_THRESHOLD else "STABLE"
 
-            pred_x = int(x + (dx * PREDICTION_FRAMES))
-            pred_y = int(y + (dy * PREDICTION_FRAMES))
-            dist_future = np.linalg.norm(
-                np.array((pred_x, pred_y)) - np.array((center_x, center_y))
-            )
+                pred_x = int(x + (dx * PREDICTION_FRAMES))
+                pred_y = int(y + (dy * PREDICTION_FRAMES))
+                dist_future = np.linalg.norm(
+                    np.array((pred_x, pred_y)) - np.array((center_x, center_y))
+                )
 
-            is_intercept = dist_future < COLLISION_ZONE
-            is_approaching = growth_rate > GROWTH_THRESHOLD
+                is_intercept = dist_future < COLLISION_ZONE
+                is_approaching = growth_rate > GROWTH_THRESHOLD
 
-            # Calculate velocity magnitude for classification
-            velocity_magnitude = math.sqrt(dx**2 + dy**2)
-            
-            # Classify the object
-            classification = ObjectClassifier.classify_object(radius, velocity_magnitude, is_approaching)
-            
-            risk_level = classification["risk_level"]
-            object_type = classification["type"]
+                # Calculate velocity magnitude for classification
+                velocity_magnitude = math.sqrt(dx**2 + dy**2)
+                
+                # Classify the object
+                classification = ObjectClassifier.classify_object(radius, velocity_magnitude, is_approaching)
+                
+                risk_level = classification["risk_level"]
+                object_type = classification["type"]
 
-            if is_intercept and is_approaching:
-                status_color = (0, 0, 255)
-                status_msg = "⚠️ COLLISION COURSE"
-                risk_level = "CRITICAL"
-                critical_count = 1
+                if is_intercept and is_approaching:
+                    status_color = (0, 0, 255)
+                    status_msg = "⚠️ COLLISION COURSE"
+                    risk_level = "CRITICAL"
+                    critical_count = 1
 
-                dodge_x = "RIGHT" if dx < 0 else "LEFT"
-                dodge_y = "DOWN" if dy < 0 else "UP"
+                    dodge_x = "RIGHT" if dx < 0 else "LEFT"
+                    dodge_y = "DOWN" if dy < 0 else "UP"
 
-                system_state["maneuver"] = f"THRUST {dodge_x}-{dodge_y}"
-                system_state["delta_v"] = "1.240 km/s"
+                    system_state["maneuver"] = f"THRUST {dodge_x}-{dodge_y}"
+                    system_state["delta_v"] = "1.240 km/s"
 
+                    cv2.putText(
+                        frame,
+                        f"ACTION: THRUST {dodge_x} & {dodge_y}",
+                        (50, h - 80),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 255, 255),
+                        2,
+                    )
+                    cv2.line(frame, (int(x), int(y)), (center_x, center_y), (0, 0, 255), 3)
+
+                elif is_intercept and not is_approaching:
+                    status_color = (255, 100, 0)
+                    status_msg = "TRAJECTORY INTERSECT (SAFE)"
+                    risk_level = "HIGH"
+                    system_state["maneuver"] = "NONE"
+                else:
+                    status_color = (0, 255, 255)
+                    status_msg = "TRACKING TARGET"
+                    system_state["maneuver"] = "MAINTAIN"
+
+                vector_text = f"V: {direction_label} | Z: {z_label}"
+
+                cv2.circle(frame, (int(x), int(y)), int(radius), status_color, 2)
+                cv2.circle(frame, (int(x), int(y)), 2, status_color, -1)
+
+                if abs(dx) > 1 or abs(dy) > 1:
+                    cv2.arrowedLine(
+                        frame, (int(x), int(y)), (pred_x, pred_y), (0, 255, 255), 3
+                    )
+
+                # Add object type label on video feed
                 cv2.putText(
                     frame,
-                    f"ACTION: THRUST {dodge_x} & {dodge_y}",
-                    (50, h - 80),
+                    object_type,
+                    (int(x) - 40, int(y) - int(radius) - 10),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 255, 255),
+                    0.5,
+                    status_color,
                     2,
                 )
-                cv2.line(frame, (int(x), int(y)), (center_x, center_y), (0, 0, 255), 3)
 
-            elif is_intercept and not is_approaching:
-                status_color = (255, 100, 0)
-                status_msg = "TRAJECTORY INTERSECT (SAFE)"
-                risk_level = "HIGH"
-                system_state["maneuver"] = "NONE"
-            else:
-                status_color = (0, 255, 255)
-                status_msg = "TRACKING TARGET"
-                system_state["maneuver"] = "MAINTAIN"
-
-            vector_text = f"V: {direction_label} | Z: {z_label}"
-
-            cv2.circle(frame, (int(x), int(y)), int(radius), status_color, 2)
-            cv2.circle(frame, (int(x), int(y)), 2, status_color, -1)
-
-            if abs(dx) > 1 or abs(dy) > 1:
-                cv2.arrowedLine(
-                    frame, (int(x), int(y)), (pred_x, pred_y), (0, 255, 255), 3
+                # Estimate distance based on size (inverse relationship)
+                estimated_distance = max(10, 500 - (radius * 2))
+                
+                current_objects_data.append(
+                    {
+                        "id": "OBJ_001",
+                        "type": object_type,
+                        "distance": f"{estimated_distance:.2f}m",
+                        "risk": risk_level,
+                    }
                 )
 
-            # Add object type label on video feed
+            for i in range(1, len(self.pos_pts)):
+                if self.pos_pts[i - 1] is None or self.pos_pts[i] is None:
+                    continue
+                thickness = int(np.sqrt(BUFFER_SIZE / float(i + 1)) * 2.5)
+                cv2.line(
+                    frame, self.pos_pts[i - 1], self.pos_pts[i], (0, 0, 255), thickness
+                )
+
+            cv2.rectangle(frame, (0, 0), (w, 100), (0, 0, 0), -1)
             cv2.putText(
                 frame,
-                object_type,
-                (int(x) - 40, int(y) - int(radius) - 10),
+                "AADES AUTONOMOUS SENSOR",
+                (20, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                status_color,
-                2,
+                0.6,
+                (150, 150, 150),
+                1,
+            )
+            cv2.putText(
+                frame, status_msg, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2
+            )
+            cv2.putText(
+                frame,
+                vector_text,
+                (20, 95),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                1,
             )
 
-            # Estimate distance based on size (inverse relationship)
-            estimated_distance = max(10, 500 - (radius * 2))
-            
-            current_objects_data.append(
-                {
-                    "id": "OBJ_001",
-                    "type": object_type,
-                    "distance": f"{estimated_distance:.2f}m",
-                    "risk": risk_level,
-                }
-            )
-
-        for i in range(1, len(self.pos_pts)):
-            if self.pos_pts[i - 1] is None or self.pos_pts[i] is None:
-                continue
-            thickness = int(np.sqrt(BUFFER_SIZE / float(i + 1)) * 2.5)
             cv2.line(
-                frame, self.pos_pts[i - 1], self.pos_pts[i], (0, 0, 255), thickness
+                frame,
+                (center_x - 20, center_y),
+                (center_x + 20, center_y),
+                (100, 100, 100),
+                1,
             )
-
-        cv2.rectangle(frame, (0, 0), (w, 100), (0, 0, 0), -1)
-        cv2.putText(
-            frame,
-            "AADES AUTONOMOUS SENSOR",
-            (20, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (150, 150, 150),
-            1,
-        )
-        cv2.putText(
-            frame, status_msg, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2
-        )
-        cv2.putText(
-            frame,
-            vector_text,
-            (20, 95),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            1,
-        )
-
-        cv2.line(
-            frame,
-            (center_x - 20, center_y),
-            (center_x + 20, center_y),
-            (100, 100, 100),
-            1,
-        )
-        cv2.line(
-            frame,
-            (center_x, center_y - 20),
-            (center_x, center_y + 20),
-            (100, 100, 100),
-            1,
-        )
-        cv2.circle(frame, (center_x, center_y), COLLISION_ZONE, (50, 50, 50), 1)
-
-        system_state["objects_detected"] = 1 if target_found else 0
-        system_state["critical_threats"] = critical_count
-        system_state["system_status"] = status_msg
-        system_state["detected_objects"] = current_objects_data
-
-        if status_msg != self.last_status:
-            log_type = "CRITICAL" if critical_count > 0 else "INFO"
-            log_event(
-                log_type,
-                f"Status Change: {status_msg} - Maneuver: {system_state['maneuver']}",
+            cv2.line(
+                frame,
+                (center_x, center_y - 20),
+                (center_x, center_y + 20),
+                (100, 100, 100),
+                1,
             )
-            self.last_status = status_msg
+            cv2.circle(frame, (center_x, center_y), COLLISION_ZONE, (50, 50, 50), 1)
 
-        ret, jpeg = cv2.imencode(".jpg", frame)
-        return jpeg.tobytes()
+            system_state["objects_detected"] = 1 if target_found else 0
+            system_state["critical_threats"] = critical_count
+            system_state["system_status"] = status_msg
+            system_state["detected_objects"] = current_objects_data
+
+            if status_msg != self.last_status:
+                log_type = "CRITICAL" if critical_count > 0 else "INFO"
+                log_event(
+                    log_type,
+                    f"Status Change: {status_msg} - Maneuver: {system_state['maneuver']}",
+                )
+                self.last_status = status_msg
+
+            ret, jpeg = cv2.imencode(".jpg", frame)
+            return jpeg.tobytes()
+        except Exception as e:
+            print(f"Error in get_frame: {e}")
+            # Return a blank frame on error to prevent crashes
+            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(blank_frame, "Camera Error", (200, 240), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            ret, jpeg = cv2.imencode(".jpg", blank_frame)
+            return jpeg.tobytes()
 
 
 @app.route("/")
